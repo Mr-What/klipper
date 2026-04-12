@@ -20,6 +20,7 @@ SOURCE_FILES = [
     'pyhelper.c', 'serialqueue.c', 'stepcompress.c', 'steppersync.c',
     'itersolve.c', 'trapq.c', 'pollreactor.c', 'msgblock.c', 'trdispatch.c',
     'kin_cartesian.c', 'kin_corexy.c', 'kin_corexz.c', 'kin_delta.c',
+    'kin_tilted_delta.c',
     'kin_deltesian.c', 'kin_polar.c', 'kin_rotary_delta.c', 'kin_winch.c',
     'kin_extruder.c', 'kin_shaper.c', 'kin_idex.c', 'kin_generic.c'
 ]
@@ -135,6 +136,12 @@ defs_kin_delta = """
         , double tower_x, double tower_y);
 """
 
+defs_kin_tilted_delta = """
+    struct stepper_kinematics *tilted_delta_stepper_alloc(
+        double arm, double x0, double y0,
+	double tilt_x, double tilt_y);
+"""
+
 defs_kin_deltesian = """
     struct stepper_kinematics *deltesian_stepper_alloc(double arm2
         , double arm_x);
@@ -237,6 +244,7 @@ defs_all = [
     defs_pyhelper, defs_serialqueue, defs_std, defs_stepcompress,
     defs_steppersync, defs_itersolve, defs_trapq, defs_trdispatch,
     defs_kin_cartesian, defs_kin_corexy, defs_kin_corexz, defs_kin_delta,
+    defs_kin_tilted_delta,
     defs_kin_deltesian, defs_kin_polar, defs_kin_rotary_delta, defs_kin_winch,
     defs_kin_extruder, defs_kin_shaper, defs_kin_idex,
     defs_kin_generic_cartesian,
