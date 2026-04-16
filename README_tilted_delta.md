@@ -17,12 +17,13 @@ The additional `tilted_delta` capabilities are maintained in the
 
 At this time, the only differences are as follows:
 
-`klippy/chelper/__init__.py`
-: Add entry point definitions for `kin_tilted_delta`.
-`klippy/chelper/kin_tilted_delta.c`
-: fast inverse kinematics implementation
-`klippy/kinematics/tilted_delta.py`
-: Core tilted_delta model implementation.
+<DL><DT><code>klippy/chelper/__init__.py</code></DT>
+<DD>Add entry point definitions for <code>kin_tilted_delta</code></DD>
+<DT><code>klippy/chelper/kin_tilted_delta.c</code></DT>
+<DD>fast inverse kinematics implementation</DD>
+<DT><code>klippy/kinematics/tilted_delta.py</code></DT>
+<DD>Core tilted_delta model implementation</DD>
+</DL>
 
 Calibration procedures for the tilted_delta model are provided
 outside of kilpper.  See https://github.com/Mr-What/Tetra3D
