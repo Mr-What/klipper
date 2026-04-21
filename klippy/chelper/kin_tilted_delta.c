@@ -45,7 +45,7 @@ tilted_delta_stepper_calc_position(struct stepper_kinematics *sk,
     // for quadratic, a*d^2 + b*d + c = 0, a==1==|dir|
     double qx = xyz.x - ds->base_x;
     double qy = xyz.y - ds->base_y;
-    double b = 2 * (ds->dir_z * xyz.z -
+    double b = 2 * (-ds->dir_z * xyz.z -
 		    ds->dir_x * qx -
 		    ds->dir_y * qy );
     double c = qx*qx + qy*qy + xyz.z * xyz.z - ds->arm2;

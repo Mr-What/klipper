@@ -241,7 +241,7 @@ class TiltedDeltaKinematics:
         yHat = yC/np.linalg.norm(yC)
         zHat = -np.cross(xHat,yHat)
         q = origin + apex[0]*xHat + apex[1]*yHat + apex[2]*zHat
-        self._log("actuator=[%.3f,%.3f,%.3f] at [%.3f,%.3f,%.3f]",
+        self._log("\tabc=[%.3f,%.3f,%.3f]\n\t\t\t\txyz=[%.3f,%.3f,%.3f]",
                          spos[0],spos[1],spos[2],
                          q[0],q[1],q[2])
         return tuple(float(v) for v in q)
@@ -276,15 +276,13 @@ class TiltedDeltaKinematics:
         #if sum(abs(err)) >0
         #disp(err);
         #end
-        
+
+    # wrapper to _actuator_to_cartesian(), but gets stepper position by rail name
     def calc_position(self, stepper_positions):
-        t0 = time.monotonic()
         self._log("calc_position()")
         spos = [stepper_positions[rail.get_name()] for rail in self.rails]
         xyz = self._actuator_to_cartesian(spos)
-        self._log("calc_position spos=[%.3f,%.3f,%.3f] is at [%.3f,%.3f,%.3f] dt=%.3f",
-                  spos[0],spos[1],spos[2],xyz[0],xyz[1],xyz[2],
-                  time.monotonic() - t0)
+        #xyz[2] = -xyz[2]  # try flipping Z to match command.  had -Z problem, did nothing?!??
         return xyz
 
     def set_position(self, newpos, homing_axes):
@@ -350,24 +348,29 @@ class TiltedDeltaKinematics:
                          self.base[2,2])
         
     def _check_envelope(self, pos):
-        # temporary debug.  avoid chelper.
         self._log("_check_envelope(%.3f,%.3f,%.3f)",pos[0],pos[1],pos[2])
         twr = self._cart2twr(pos)
-        self._log("twr=[%.3f,%.3f,%.3f]",twr[0], twr[1], twr[2])
-        if (twr[0] == 0):
-            return False  # [0,0,0] is error code.  out of envelope
+        if twr is None:  # error code.  out of envelope
+            self._log("ERROR : not reachable")
+            return False
+        self._log("\ttwr=[%.3f,%.3f,%.3f]",twr[0], twr[1], twr[2])
 
         for i in range(3):
             z = twr[i] * self.tilt[i,2] # z(mm) for arm at twr[i] from base
             z -= pos[2] # how far from effector_z to top of arm
             z = z / self.arm_lengths[i] # sin of arm angle
             if (z < .1) or (z > .99):  # arm angle too extreme
+                self._log("ERROR : arm angle %.1f too extreme",
+                          math.degrees(math.asin(z)))
                 return False   
         return True
 
     # this should do the same thing as chelper tilted_delta_calc_position()
     # but it will be a challenge to call that from here, because of
     # the move stuff.  tight coupling.
+    # for now, I'm just duplicating the math in tilted_delta_calc_position().
+    # perhaps we could have tilted_delta_calc_position call a sub-function
+    # passing xyz (instead of move time), and we could call that from python.
     def _cart2twr(self, xyz):
         self._log("_cart2twr([%.3f,%.3f,%.3f])",
                   xyz[0],xyz[1],xyz[2])
@@ -377,7 +380,7 @@ class TiltedDeltaKinematics:
                                self.arm_lengths[i],xyz)
             self._log("\ttower %d distance %.3f",i,d)
             if d == 0:
-                return (0.,0.,0.)
+                return None
             
             twr[i] = d
 
