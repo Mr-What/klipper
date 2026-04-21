@@ -7,6 +7,8 @@ import math
 import stepper, mathutil
 # remove the following imports eventually:
 import logging
+import time
+from datetime import datetime
 import numpy as np
 
 # Slow moves once the ratio of tower to XY movement exceeds SLOW_RATIO
@@ -34,21 +36,11 @@ class TiltedDeltaKinematics:
         self.position_endstops = [ a_endstop,
                          rail_b.get_homing_info().position_endstop,
                          rail_c.get_homing_info().position_endstop]
-
-        # we may want to check rotation_distance for stretched belts:
-        #self.rotation_distances = [s['rotation_distance'] for s in stepper_configs]
-        #self.rotation_distances = [config.getfloat('stepper_' + a,
-        #                         'rotation_distance', fallback=40.0)
-        #                          for a in "abc"]
         self.rotation_distances = [
             config.getsection('stepper_' + a).getfloat('rotation_distance', 40.0)
             for a in 'abc']
 
-        # retrieve settings from [printer] section
-        #cfile = self.printer.lookup_object('configfile')
-        #printer_cfg = cfile.getsection('printer')
-        printer_cfg = config.getsection('printer')
-        
+
         # Setup max velocity
         self.max_velocity, self.max_accel = toolhead.get_max_velocity()
         self.max_z_velocity = config.getfloat(
@@ -56,6 +48,9 @@ class TiltedDeltaKinematics:
             above=0., maxval=self.max_velocity)
         self.max_z_accel = config.getfloat('max_z_accel', self.max_accel,
                                           above=0., maxval=self.max_accel)
+
+        # retrieve settings from [printer] section
+        printer_cfg = config.getsection('printer')
 
         print_radius = printer_cfg.getfloat('print_radius', 110., above=0.)
 
@@ -71,19 +66,6 @@ class TiltedDeltaKinematics:
         # length of arm for towers A, B, C
         self.arm_lengths  = self.getvector('arm_lengths', (287., 287., 287))
 
-        # endstops handled in [stepper_?] section.
-        
-        #arm_length_a = stepper_configs[0].getfloat('arm_length', above=radius)
-        #self.abs_endstops = [(rail.get_homing_info().position_endstop
-        #                      + math.sqrt(arm2 - radius**2))
-        #                     for rail, arm2 in zip(self.rails, self.arm2)]
-        # Determine tower locations in cartesian space
-
-        ## position in mm from base when carriage hits endstop.
-        ##    usually a bit shorter than measured because of effector offset
-        # I think this should be in [stepper_?] section
-        #self.endstop_distances = config.getfloats('endstop_distances', [500., 500., 500.], count=3)
-        
         # --- Parameters describing the tilt of towers in tilted_delta
         # angle, in degrees, of tower tilt toward center
         #       0's for linear delta, 13 for prototype tetrahedral delta
@@ -96,40 +78,31 @@ class TiltedDeltaKinematics:
         # kinematics assert base is z=0 plane, add this AFTER
         # cartesian coords to adjust for thinner print bed, or plate on top of bed.
         #self.z_offset = config.getfloat('z_offset',0.)
-
-        #for r, a, t in zip(self.rails, self.arm2, self.towers):
-        #    r.setup_itersolve('delta_stepper_alloc', a, t[0], t[1])
         
-        #for s in self.get_steppers():
-        #    s.set_trapq(toolhead.get_trapq())
         # Setup boundary checks
         self.need_home = True
         #self.limit_xy2 = -1.
         endstop_pos = [rail.get_homing_info().position_endstop
                        for rail in self.rails]
         self.max_z = min(endstop_pos)
-
-        #self.min_z = config.getfloat('minimum_z_position', 0, maxval=self.max_z)
+        self.min_z = config.getfloat('minimum_z_position', 0, maxval=self.max_z)
         #self.limit_z = min([ep - arm
         #                    for ep, arm in zip(self.abs_endstops, arm_lengths)])
-        #self.set_position([0., 0., 0.], "")
 
         # --- Derived/calculated parameters (computed on init)
         self._compute_derived_parameters()
 
         # more parameters, dependant on derived parameters
         apos = (self.max_z,) * 3
-        self.logger.info("tilted_delta : actuator position at home [%.3f,%.3f,%.3f]",
-                         apos[0],apos[1],apos[2])
-        self.home_position = self._actuator_to_cartesian(apos)
-        self.logger.info("tilted_delta : home_position=[%.3f,%.3f,%.3f]",
-                         self.home_position[0],
-                         self.home_position[1],
-                         self.home_position[2])
+        self.init_time = time.monotonic() # need this set a little early for diagnostic init logs
+        self._log("actuator position at home [%.3f,%.3f,%.3f]",
+                  apos[0],apos[1],apos[2])
+        self.home_position = tuple(self._actuator_to_cartesian(apos))
+        self._log("home_position=[%.3f,%.3f,%.3f]",
+                  self.home_position[0],
+                  self.home_position[1],
+                  self.home_position[2])
         
-        #for r, a, t in zip(self.rails, self.arm2, self.towers):
-        #    r.setup_itersolve('delta_stepper_alloc', a, t[0], t[1])
-
         # set up chelper inverse kinematics, and provide necessary parameters
         for i in range(3) :
             arm = self.arm_lengths[i]
@@ -137,18 +110,48 @@ class TiltedDeltaKinematics:
             by = self.base[i,1]
             tx = self.tilt[i,0]
             ty = self.tilt[i,1]
-            self.logger.info("tilted_delta : rail(%d) %.3fmm arm base=[%.3f,%.3f] tilt=[%.3f,%.3f]",
-                             i,arm,bx,by,tx,ty)
+            self._log("rail(%d) %.3fmm arm base=[%.3f,%.3f] tilt=[%.3f,%.3f]",
+                      i,arm,bx,by,tx,ty)
             self.rails[i].setup_itersolve('tilted_delta_stepper_alloc',
                                           arm, bx, by, tx, ty)
 
-        self.logger.info("titled_delta.__init__ complete.")
+        tq = toolhead.get_trapq()
+        for s in self.get_steppers():
+            s.set_trapq(tq)
+
+        config.get_printer().register_event_handler(
+            "stepper_enable:motor_off", self.motor_off)
+
+        self.max_z = min([rail.get_homing_info().position_endstop
+                          for rail in self.rails])
+        self.min_z = config.getfloat('minimum_z_position', 0,
+                                     maxval=self.max_z)
+        #self.limit_z = min([ep - arm for ep, arm in zip(self.abs_endstops, arm_lengths)])
+        #def ratio_to_xy(ratio):
+        #    return (ratio * math.sqrt(min_arm_length**2 / (ratio**2 + 1.)
+        #                              - half_min_step_dist**2)
+        #            + half_min_step_dist - radius)
+        #self.slow_xy2 = ratio_to_xy(SLOW_RATIO)**2
+        #self.very_slow_xy2 = ratio_to_xy(2. * SLOW_RATIO)**2
+        #self.max_xy2 = min(print_radius, min_arm_length - radius,
+        #                   ratio_to_xy(4. * SLOW_RATIO))**2
+        #self.axes_min = toolhead.Coord((-max_xy, -max_xy, self.min_z))
+        #self.axes_max = toolhead.Coord((max_xy, max_xy, self.max_z))
+        self.set_position([0., 0., 0.], "")
+
+        self._log("init complete at %s", self._timestamp())
+        
+    @staticmethod
+    def _timestamp():
+        return datetime.now().strftime("%m/%d/%Y %H:%M:%S")
+
+    # use this for informational logs whenever possible:
+    def _log(self, fmt, *args):
+        et = time.monotonic() - self.init_time
+        self.logger.info("tilted_delta %.3f : " + fmt, et, *args)
         
     # --------------------------------------------- derived parameters
     def _compute_derived_parameters(self):
-        """Compute derived geometry from base parameters"""
-        #deg2rad = 3.1415926535898 / 180.0
-
         self.base = np.zeros((3,3), dtype=float)  # rows are locations of tower bases
         self.tilt = np.zeros((3,3), dtype=float)  # rows are unit direction vector of tower, pointing up from base
         #v = np.array([0,0,0])
@@ -213,6 +216,7 @@ class TiltedDeltaKinematics:
 
     def get_steppers(self):
         return [s for rail in self.rails for s in rail.get_steppers()]
+    
     def _actuator_to_cartesian(self, spos):
         cp = np.array(self.base, copy=True)       # carriage positions in cartesian
         for i in range(3):
@@ -227,7 +231,7 @@ class TiltedDeltaKinematics:
         # find the position of the apex of a tetrahedron, with
         # given base lengths, and arm_lengths which go from
         # the base to the apex
-        apex = self.getTetraCoords(baseLen,self.arm_lengths)
+        apex = self._getTetraCoords(baseLen,self.arm_lengths)
 
         # convert from effector coords back to tower
         xHat = vAB / baseLen[2]
@@ -237,12 +241,13 @@ class TiltedDeltaKinematics:
         yHat = yC/np.linalg.norm(yC)
         zHat = -np.cross(xHat,yHat)
         q = origin + apex[0]*xHat + apex[1]*yHat + apex[2]*zHat
-        self.logger.info("tilted_delta : actuator=[%.3f,%.3f,%.3f] at [%.3f,%.3f,%.3f]",
-                         spos[0],spos[1],spos[2],  q[0],q[1],q[2])
+        self._log("actuator=[%.3f,%.3f,%.3f] at [%.3f,%.3f,%.3f]",
+                         spos[0],spos[1],spos[2],
+                         q[0],q[1],q[2])
         return tuple(float(v) for v in q)
 
     @staticmethod
-    def getTetraCoords(baseLen, twrLen):
+    def _getTetraCoords(baseLen, twrLen):
         aa, bb, cc = baseLen
         a2 = aa*aa
         b2 = bb*bb
@@ -273,16 +278,22 @@ class TiltedDeltaKinematics:
         #end
         
     def calc_position(self, stepper_positions):
+        t0 = time.monotonic()
+        self._log("calc_position()")
         spos = [stepper_positions[rail.get_name()] for rail in self.rails]
-        return self._actuator_to_cartesian(spos)
+        xyz = self._actuator_to_cartesian(spos)
+        self._log("calc_position spos=[%.3f,%.3f,%.3f] is at [%.3f,%.3f,%.3f] dt=%.3f",
+                  spos[0],spos[1],spos[2],xyz[0],xyz[1],xyz[2],
+                  time.monotonic() - t0)
+        return xyz
 
     def set_position(self, newpos, homing_axes):
         for rail in self.rails:
             rail.set_position(newpos)
         if homing_axes == "xyz":
             self.need_home = False
-        self.logger.info("tilted_delta.set_position([%.3f,%.3f,%.3f])",
-                         newpos[0], newpos[1], newpos[2])
+        self._log("set_position([%.3f,%.3f,%.3f])",
+                  newpos[0], newpos[1], newpos[2])
 
     def clear_homing_state(self, clear_axes):
         # Clearing homing state for each axis individually is not implemented
@@ -290,30 +301,34 @@ class TiltedDeltaKinematics:
             #self.limit_xy2 = -1
             self.need_home = True
 
+    def motor_off(self, eventTime):
+        self.need_home = True
+        
     def home(self, homing_state):
-        self.logger.info("tilted_delta: home([%.3f,%.3f,%.3f])",
-                         self.home_position[0],
-                         self.home_position[1],
-                         self.home_position[2])
+        self._log("home([%.3f,%.3f,%.3f])",
+                  self.home_position[0],
+                  self.home_position[1],
+                  self.home_position[2])
         # All axes are homed simultaneously
         homing_state.set_axes([0, 1, 2])
         forcepos = list(self.home_position)
         #forcepos[2] = -1.5 * math.sqrt(max(self.arm2)-self.max_xy2)
-        self.logger.info("tilted_delta: homing rails to [%.3f,%.3f,%.3f]",
-                         forcepos[0],forcepos[1],forcepos[2])
+        self._log("homing rails to [%.3f,%.3f,%.3f]",
+                  forcepos[0],forcepos[1],forcepos[2])
         homing_state.home_rails(self.rails, forcepos, self.home_position)
-        self.logger.info("tilted_delta: home() complete.")
-        self._logBase()
+        self._log("home() complete.")
         
     def check_move(self, move):
         end_pos = [move.end_pos[0], move.end_pos[1], move.end_pos[2]]  # last element is extruder position, E, and we don't care
-        self.logger.info("tilted_delta: check_move() end_pos=[%.3f,%.3f,%.3f]%d axes_d=%s need_home=%s",
-                         end_pos[0],end_pos[1],end_pos[2],len(end_pos), 
-                         getattr(move,"axes_d", None),
-                         self.need_home)
+        self._log("check_move() end_pos=[%.3f,%.3f,%.3f]%d axes_d=%s need_home=%s",
+                  end_pos[0],end_pos[1],end_pos[2],len(end_pos), 
+                  getattr(move,"axes_d", None),
+                  self.need_home)
 
+        return # debug.  no checking.
+    
         if self.need_home:
-            self.logger.info("tilted_delta: rejecting move, need home first");
+            self._log("rejecting move, need home first");
             #raise move.move_error("Must home first")
             return  # debugging ONLY!  move anyway to test steppers
 
@@ -336,32 +351,31 @@ class TiltedDeltaKinematics:
         
     def _check_envelope(self, pos):
         # temporary debug.  avoid chelper.
-        self.logger.info("tilted_delta._check_envelope(%.3f,%.3f,%.3f)",pos[0],pos[1],pos[2])
+        self._log("_check_envelope(%.3f,%.3f,%.3f)",pos[0],pos[1],pos[2])
         twr = self._cart2twr(pos)
-        self.logger.info("tilted_delta: twr=[%.3f,%.3f,%.3f]",twr[0], twr[1], twr[2])
+        self._log("twr=[%.3f,%.3f,%.3f]",twr[0], twr[1], twr[2])
         if (twr[0] == 0):
             return False  # [0,0,0] is error code.  out of envelope
 
         for i in range(3):
-            tPos = self.base[i,:] + twr[i] * self.tilt[i,:]
-            v = tPos - np.array(pos)
-            sina = v[2] / np.linalg.norm(v)
-            if (sina < .1) or (sina > .99):  # arm angle too extreme
+            z = twr[i] * self.tilt[i,2] # z(mm) for arm at twr[i] from base
+            z -= pos[2] # how far from effector_z to top of arm
+            z = z / self.arm_lengths[i] # sin of arm angle
+            if (z < .1) or (z > .99):  # arm angle too extreme
                 return False   
         return True
 
+    # this should do the same thing as chelper tilted_delta_calc_position()
+    # but it will be a challenge to call that from here, because of
+    # the move stuff.  tight coupling.
     def _cart2twr(self, xyz):
-        self.logger.info("tilted_delta._cart2twr([%.3f,%.3f,%.3f])",xyz[0],xyz[1],xyz[2])
+        self._log("_cart2twr([%.3f,%.3f,%.3f])",
+                  xyz[0],xyz[1],xyz[2])
         twr = [0.,0.,0.]
         for i in range(3):
-            #base = np.array([self.base[i,0], self.base[i,1], self.base[i,2]], dtype=float)
-            #tilt = self.tilt[i,:]
-            #arm = self.arm_lengths[i]
-            #p = [0.,0.,0.]
-            #self.logger.info("tilted_delta base(%d) = [%.3f,%.3f,%.3f]",i,base[0],base[1],base[2])
             d = self._towerDistance(self.base[i,:], self.tilt[i,:],
                                self.arm_lengths[i],xyz)
-            self.logger.info("      tower %d distance %.3f",i,d)
+            self._log("\ttower %d distance %.3f",i,d)
             if d == 0:
                 return (0.,0.,0.)
             
@@ -371,28 +385,20 @@ class TiltedDeltaKinematics:
         
     @staticmethod
     def _towerDistance(p0, vHat, r, q):
-        #self.logger.info("tilted_delta._towerDistance([%.3f,%.3f,%.3f], [%.3f,%.3f,%.3f], %.3f, [%.3f,%.3f,%.3f])",
-        #                 p0[0],p0[1],p0[2], vHat[0],vHat[1],vHat[2], r, q[0],q[1],q[2])
         # for quadratic, a*d^2 + b*d + c = 0, a==1,
         q = np.asarray(q, dtype=float)
         b = 2 * np.dot(vHat,p0-q)
-        #self.logger.info("%.3f",b)
         dq = q - p0
         c = np.dot(dq,dq) - r*r
-        #self.logger.info("%.3f",c)
         disc = b*b - 4*c
         if (disc < 0):
             return 0
         d = (-b + math.sqrt(disc))/2
-        #d = (-b - sqrt(disc))/2;
         return d
 
     def get_status(self, eventtime):
         return {
             'homed_axes': '' if self.need_home else 'xyz'
-            #'axis_minimum': self.axes_min,
-            #'axis_maximum': self.axes_max,
-            #'cone_start_z': self.limit_z,
         }
 
 def load_kinematics(toolhead, config):
