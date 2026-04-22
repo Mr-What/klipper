@@ -22,12 +22,9 @@ struct tilted_delta_stepper {
 
 static double
 tilted_delta_stepper_calc_position(struct stepper_kinematics *sk,
-				   struct move *m
-				   , double move_time)
+				   struct move *m,
+				   double move_time)
 {
-    static int callCount=0;
-    static int updateCount=0;
-    static int axisCount=0;
     static double prev_t=-9e9;    // move_time at previous call
     static struct coord xyz;      // coord at prev_t
     struct tilted_delta_stepper *ds = container_of(sk, struct tilted_delta_stepper, sk);
@@ -36,31 +33,25 @@ tilted_delta_stepper_calc_position(struct stepper_kinematics *sk,
       {
         xyz = move_get_coord(m, move_time);
 	prev_t = move_time;
-	//fprintf(stderr,"\ncalc_position %d at [%.3lf,%.3lf,%.3lf] ",
-	//	callCount,xyz.x,xyz.y,xyz.z);
-	updateCount++;
-	axisCount=0;
       }
 
     // for quadratic, a*d^2 + b*d + c = 0, a==1==|dir|
     double qx = xyz.x - ds->base_x;
     double qy = xyz.y - ds->base_y;
     double b = 2 * (-ds->dir_z * xyz.z -
-		    ds->dir_x * qx -
-		    ds->dir_y * qy );
+                     ds->dir_x * qx -
+		     ds->dir_y * qy );
     double c = qx*qx + qy*qy + xyz.z * xyz.z - ds->arm2;
     double disc = b*b - 4.0 * c;
     if (disc < 0) {
-      fprintf(stderr," non-physical ");
+      fprintf(stderr,"tilted_delta : [%.1lf,%.1lf,%.1lf] not reachable\n",
+	      xyz.x,xyz.y,xyz.z);
       return(0.);
     }
     // I believe that for valid pose, answer is never b-sqrt(disc)
     c = 0.5 * (sqrt(disc)-b);
-    //fprintf(stderr," %.3lf",c);
     callCount++;
     axisCount++;
-    //if (axisCount == 3)
-    //  fprintf(stderr,"\n");
     return(c);
 }
 
