@@ -82,26 +82,33 @@ class TiltedDeltaKinematics:
         # Setup boundary checks
         self.need_home = True
         #self.limit_xy2 = -1.
-        endstop_pos = [rail.get_homing_info().position_endstop
-                       for rail in self.rails]
-        self.max_z = min(endstop_pos)
-        self.min_z = config.getfloat('minimum_z_position', 0, maxval=self.max_z)
-        #self.limit_z = min([ep - arm
-        #                    for ep, arm in zip(self.abs_endstops, arm_lengths)])
 
         # --- Derived/calculated parameters (computed on init)
         self._compute_derived_parameters()
 
-        # more parameters, dependant on derived parameters
-        apos = (self.max_z,) * 3
-        self.init_time = time.monotonic() # need this set a little early for diagnostic init logs
+        # --- more parameters, dependant on derived parameters
+
+        endstop_pos = [rail.get_homing_info().position_endstop
+                       for rail in self.rails]
+        endpos = min(endstop_pos)
+        self.min_stepper = config.getfloat('minimum_stepper_position', 0, maxval=endpos-100)
+        
+        apos = (endpos-3,) * 3  # highest safe actuator position
+        xyzHi = self._actuator_to_cartesian(apos)
+
+        # go to here after homing?
+        self.home_position = tuple(0., 0., round(xyzHi[2]))
+
+        # update apos to desired home position instead of highest safe stepper position
+        apos = self._cart2twr(self.home_position) 
         self._log("actuator position at home [%.3f,%.3f,%.3f]",
                   apos[0],apos[1],apos[2])
-        self.home_position = tuple(self._actuator_to_cartesian(apos))
         self._log("home_position=[%.3f,%.3f,%.3f]",
                   self.home_position[0],
                   self.home_position[1],
                   self.home_position[2])
+
+        self.init_time = time.monotonic() # need this set a little early for diagnostic init logs
         
         # set up chelper inverse kinematics, and provide necessary parameters
         for i in range(3) :
@@ -119,13 +126,16 @@ class TiltedDeltaKinematics:
         for s in self.get_steppers():
             s.set_trapq(tq)
 
-        config.get_printer().register_event_handler(
-            "stepper_enable:motor_off", self.motor_off)
+        # not working for unknown reason.
+        # complains about motor_off signature, but it is as documented.
+        #config.get_printer().register_event_handler(
+        #    "stepper_enable:motor_off", self.motor_off)
 
-        self.max_z = min([rail.get_homing_info().position_endstop
-                          for rail in self.rails])
-        self.min_z = config.getfloat('minimum_z_position', 0,
-                                     maxval=self.max_z)
+        #self.max_z = min([rail.get_homing_info().position_endstop
+        #                  for rail in self.rails])
+        #self.min_z = config.getfloat('minimum_stepper_position', 0,
+        #                             maxval=self.max_z)
+        
         #self.limit_z = min([ep - arm for ep, arm in zip(self.abs_endstops, arm_lengths)])
         #def ratio_to_xy(ratio):
         #    return (ratio * math.sqrt(min_arm_length**2 / (ratio**2 + 1.)
@@ -241,7 +251,7 @@ class TiltedDeltaKinematics:
         yHat = yC/np.linalg.norm(yC)
         zHat = -np.cross(xHat,yHat)
         q = origin + apex[0]*xHat + apex[1]*yHat + apex[2]*zHat
-        self._log("\tabc=[%.3f,%.3f,%.3f]\n\t\t\t\txyz=[%.3f,%.3f,%.3f]",
+        self._log("\tabc=[%.3f,%.3f,%.3f]\n\t\t\txyz=[%.3f,%.3f,%.3f]",
                          spos[0],spos[1],spos[2],
                          q[0],q[1],q[2])
         return tuple(float(v) for v in q)
@@ -309,11 +319,17 @@ class TiltedDeltaKinematics:
                   self.home_position[2])
         # All axes are homed simultaneously
         homing_state.set_axes([0, 1, 2])
-        forcepos = list(self.home_position)
-        #forcepos[2] = -1.5 * math.sqrt(max(self.arm2)-self.max_xy2)
-        self._log("homing rails to [%.3f,%.3f,%.3f]",
-                  forcepos[0],forcepos[1],forcepos[2])
-        homing_state.home_rails(self.rails, forcepos, self.home_position)
+        
+        # assume we are start homing from here (cartesian)
+        forcepos = [0.,0.,self.home_position[2]/5]
+
+        # move here after all homing endstops were triggered
+        homepos = [0.,0.,self.home_position[2]]
+        
+        self._log("homing rails from [%.0f,%.0f,%.0f] to [%.0f,%.0f,%.0f]",
+                  forcepos[0],forcepos[1],forcepos[2],
+                  homepos[0],  homepos[1], homepos[2])
+        homing_state.home_rails(self.rails, forcepos, homepos)
         self._log("home() complete.")
         
     def check_move(self, move):
