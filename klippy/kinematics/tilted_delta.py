@@ -92,25 +92,27 @@ class TiltedDeltaKinematics:
                        for rail in self.rails]
         endpos = min(endstop_pos)
         self.min_stepper = config.getfloat('minimum_stepper_position', 0, maxval=endpos-100)
-        
+        # I'd rather have this last of __init__,
+        # but it is needed if I want to use _log 
+        self.init_time = time.monotonic()
+                
         apos = (endpos-3,) * 3  # highest safe actuator position
-        xyzHi = self._actuator_to_cartesian(apos)
+        xyzHi = self._act2cart(apos)
 
         # go to here after homing?
-        self.home_position = tuple(0., 0., round(xyzHi[2]))
+        self.home_position = [0., 0., round(xyzHi[2])]
 
-        # update apos to desired home position instead of highest safe stepper position
-        apos = self._cart2twr(self.home_position) 
-        self._log("actuator position at home [%.3f,%.3f,%.3f]",
-                  apos[0],apos[1],apos[2])
-        self._log("home_position=[%.3f,%.3f,%.3f]",
+        # update apos to desired home position
+        #     instead of highest safe stepper position
+        apos = self._cart2act(self.home_position) 
+        self._log("home : act=[%.3f,%.3f,%.3f]; cart=[%.3f,%.3f,%.3f]",
+                  apos[0],apos[1],apos[2],
                   self.home_position[0],
                   self.home_position[1],
                   self.home_position[2])
 
-        self.init_time = time.monotonic() # need this set a little early for diagnostic init logs
-        
-        # set up chelper inverse kinematics, and provide necessary parameters
+        # set up chelper inverse kinematics
+        #    provide necessary parameters for fast cart2act
         for i in range(3) :
             arm = self.arm_lengths[i]
             bx = self.base[i,0]
@@ -227,7 +229,7 @@ class TiltedDeltaKinematics:
     def get_steppers(self):
         return [s for rail in self.rails for s in rail.get_steppers()]
     
-    def _actuator_to_cartesian(self, spos):
+    def _act2cart(self, spos):  # toolhead postion given actuator(stepper) position
         cp = np.array(self.base, copy=True)       # carriage positions in cartesian
         for i in range(3):
             cp[i,:] += self.tilt[i,:] * spos[i];
@@ -287,11 +289,11 @@ class TiltedDeltaKinematics:
         #disp(err);
         #end
 
-    # wrapper to _actuator_to_cartesian(), but gets stepper position by rail name
+    # wrapper to _act2cart(), but gets stepper position by rail name
     def calc_position(self, stepper_positions):
         self._log("calc_position()")
         spos = [stepper_positions[rail.get_name()] for rail in self.rails]
-        xyz = self._actuator_to_cartesian(spos)
+        xyz = self._act2cart(spos)
         #xyz[2] = -xyz[2]  # try flipping Z to match command.  had -Z problem, did nothing?!??
         return xyz
 
@@ -334,12 +336,13 @@ class TiltedDeltaKinematics:
         
     def check_move(self, move):
         end_pos = [move.end_pos[0], move.end_pos[1], move.end_pos[2]]  # last element is extruder position, E, and we don't care
+        start_pos = [move.start_pos[0], move.start_pos[1], move.start_pos[2]]
         self._log("check_move() end_pos=[%.3f,%.3f,%.3f]%d axes_d=%s need_home=%s",
                   end_pos[0],end_pos[1],end_pos[2],len(end_pos), 
                   getattr(move,"axes_d", None),
                   self.need_home)
 
-        return # debug.  no checking.
+        #return # debug.  no checking.
     
         if self.need_home:
             self._log("rejecting move, need home first");
@@ -348,7 +351,7 @@ class TiltedDeltaKinematics:
 
         if not self._check_envelope(end_pos):
             raise move.move_error("outside print envelope")
-
+        
     def _logBase(self):
         self.logger.info("   base=[[%8.3f,%8.3f,%8.3f],",
                          self.base[0,0],
@@ -365,7 +368,7 @@ class TiltedDeltaKinematics:
         
     def _check_envelope(self, pos):
         self._log("_check_envelope(%.3f,%.3f,%.3f)",pos[0],pos[1],pos[2])
-        twr = self._cart2twr(pos)
+        twr = self._cart2act(pos)
         if twr is None:  # error code.  out of envelope
             self._log("ERROR : not reachable")
             return False
@@ -387,14 +390,13 @@ class TiltedDeltaKinematics:
     # for now, I'm just duplicating the math in tilted_delta_calc_position().
     # perhaps we could have tilted_delta_calc_position call a sub-function
     # passing xyz (instead of move time), and we could call that from python.
-    def _cart2twr(self, xyz):
-        self._log("_cart2twr([%.3f,%.3f,%.3f])",
-                  xyz[0],xyz[1],xyz[2])
+    def _cart2act(self, xyz):
+        #self._log("_cart2act([%.3f,%.3f,%.3f])",xyz[0],xyz[1],xyz[2])
         twr = [0.,0.,0.]
         for i in range(3):
             d = self._towerDistance(self.base[i,:], self.tilt[i,:],
                                self.arm_lengths[i],xyz)
-            self._log("\ttower %d distance %.3f",i,d)
+            #self._log("\ttower %d distance %.3f",i,d)
             if d == 0:
                 return None
             
@@ -413,7 +415,7 @@ class TiltedDeltaKinematics:
         if (disc < 0):
             return 0
         d = (-b + math.sqrt(disc))/2
-        return d
+        return float(d)   # make sure d is not np.float
 
     def get_status(self, eventtime):
         return {

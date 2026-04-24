@@ -1,0 +1,33 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Klippy: live printer.cfg",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/klippy/klippy.py",
+      "args": [
+        "/home/pi/printer.cfg"
+      ],
+      "python": "/usr/bin/python3",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "Klippy: test.gcode offline",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/klippy/klippy.py",
+      "args": [
+        "/home/pi/printer.cfg",
+        "-i", "/home/pi/test.gcode",
+        "-o", "/home/pi/test.serial",
+        "-d", "/home/pi/klipper/out/klipper.dict",
+        "-v"
+      ],
+      "python": "/usr/bin/python3",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    }
+  ]
+}

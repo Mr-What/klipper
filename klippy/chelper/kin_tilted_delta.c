@@ -7,11 +7,13 @@
 #include <math.h>   // sqrt
 #include <stddef.h> // offsetof
 #include <stdlib.h> // malloc
-#include <string.h> // memset
+#include <string.h> // memset, strcmp
 #include <stdio.h>  // fprintf
 #include "compiler.h"  // __visible
 #include "itersolve.h" // struct stepper_kinematics
+#ifndef __TEST__
 #include "trapq.h"     // move_get_coord
+#endif
 
 struct tilted_delta_stepper {
     struct stepper_kinematics sk;
@@ -20,27 +22,62 @@ struct tilted_delta_stepper {
     double dir_x, dir_y, dir_z;    // direction vector for each tower, [0,0,1] for ideal classic delta
 };
 
-static double
+static void updateLog(double bx, double c, struct coord *pos)
+{
+  static FILE *f = NULL; 
+  static long callCount = 0;
+  //static long updateCount = 0;
+  //static double abc[3];
+  //static char msg[2][128];
+  //static int imsg = 0;
+  int i;
+
+  callCount++;
+
+  // which tower is this?
+  // hackey, but works for initial development
+  i = (bx < -10.) ? 0 : ((bx > 10.)? 1 : 2);
+  //abc[i] = c;
+
+  if (f == NULL) f = fopen("/tmp/td.log","w");
+  if (f == NULL) f = stderr;
+
+  //sprintf(msg[imsg],"cart=[%.3lf,%.3lf,%.3lf]; act=[%.3lf,%.3lf,%.3lf];",
+	//	pos->x, pos->y, pos->z,
+	//	abc[0], abc[1], abc[2]);
+  /*
+  sprintf(msg[imsg],"cart=[%.3lf,%.3lf,%.3lf]; act(%d)=%.3lf;",
+		pos->x, pos->y, pos->z,	i, abc[i]);
+  if (strcmp(msg[0],msg[1]) != 0) // not the same as previous report
+    {
+      fprintf(f,"%ld %s\n",callCount, msg[imsg]);
+      imsg = imsg ? 0 : 1;  // toggle active buffer
+      updateCount++;
+      fflush(f);
+    }
+  */
+  fprintf(f,"cart(k,:)=[%.3f,%.3f,%.6f];iact(k)=%d;act(k)=%.6f;k=k+1;\n",
+        pos->x, pos->y, pos->z, i, c);
+}
+
+double __visible
 tilted_delta_stepper_calc_position(struct stepper_kinematics *sk,
 				   struct move *m,
 				   double move_time)
 {
-    static double prev_t=-9e9;    // move_time at previous call
-    static struct coord xyz;      // coord at prev_t
     struct tilted_delta_stepper *ds = container_of(sk, struct tilted_delta_stepper, sk);
+    struct coord xyz;      // coord at prev_t
 
-    if (move_time != prev_t)
-      {
-        xyz = move_get_coord(m, move_time);
-	prev_t = move_time;
-      }
+    // do NOT try to cache.  caused errors.  I don't know why.
+    // perhaps with iteration, xyz is changing for a given time?
+    xyz = move_get_coord(m, move_time);
 
     // for quadratic, a*d^2 + b*d + c = 0, a==1==|dir|
     double qx = xyz.x - ds->base_x;
     double qy = xyz.y - ds->base_y;
     double b = 2 * (-ds->dir_z * xyz.z -
                      ds->dir_x * qx -
-		     ds->dir_y * qy );
+                     ds->dir_y * qy );
     double c = qx*qx + qy*qy + xyz.z * xyz.z - ds->arm2;
     double disc = b*b - 4.0 * c;
     if (disc < 0) {
@@ -50,8 +87,8 @@ tilted_delta_stepper_calc_position(struct stepper_kinematics *sk,
     }
     // I believe that for valid pose, answer is never b-sqrt(disc)
     c = 0.5 * (sqrt(disc)-b);
-    callCount++;
-    axisCount++;
+
+    //updateLog(ds->base_x, c, &xyz);
     return(c);
 }
 
@@ -72,8 +109,8 @@ tilted_delta_stepper_alloc(double arm, double x0, double y0,
     if (z2 > 0.0) ds->dir_z = sqrt(z2);
     else
       {
-	ds->dir_z = 1.;
-	fprintf(stderr,"FATAL: tilted_delta tower direction non-physical.\n\tTilt [%.3f, %.3f] should be two components of a UNIT vector!",ds->dir_x, ds->dir_y);
+        ds->dir_z = 1.;
+	      fprintf(stderr,"FATAL: tilted_delta tower direction non-physical.\n\tTilt [%.3f, %.3f] should be two components of a UNIT vector!",ds->dir_x, ds->dir_y);
       }
     fprintf(stderr,"arm2=%.3lf; base=[%.3lf,%.3lf]; tilt=[%.5lf,%.5lf,%.5lf]; z2=%.5lf\n",
 	    ds->arm2,

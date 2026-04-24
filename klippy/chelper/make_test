@@ -1,0 +1,4 @@
+#!/usr/bin/sh -x
+#gcc -g -o test test_tilted_delta.c ./c_helper.so -lm
+gcc -g -o test test_tilted_delta.c -lm
+
