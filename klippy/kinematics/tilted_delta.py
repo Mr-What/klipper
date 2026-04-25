@@ -88,28 +88,26 @@ class TiltedDeltaKinematics:
 
         # --- more parameters, dependant on derived parameters
 
-        endstop_pos = [rail.get_homing_info().position_endstop
-                       for rail in self.rails]
-        endpos = min(endstop_pos)
-        self.min_stepper = config.getfloat('minimum_stepper_position', 0, maxval=endpos-100)
+        #self.min_stepper = config.getfloat('minimum_stepper_position', 0, maxval=endpos-100)
         # I'd rather have this last of __init__,
         # but it is needed if I want to use _log 
         self.init_time = time.monotonic()
                 
-        apos = (endpos-3,) * 3  # highest safe actuator position
-        xyzHi = self._act2cart(apos)
+        #endpos = min(self.position_endstops)
+        #apos = (endpos-3,) * 3  # highest safe actuator position
+        #xyzHi = self._act2cart(apos)
 
-        # go to here after homing?
-        self.home_position = [0., 0., round(xyzHi[2])]
+        # go to here after homing?  no.  homing stops at endstop.  can't move to desired location from kinetics
+        #self.home_position = [0., 0., round(xyzHi[2])]
 
         # update apos to desired home position
         #     instead of highest safe stepper position
-        apos = self._cart2act(self.home_position) 
-        self._log("home : act=[%.3f,%.3f,%.3f]; cart=[%.3f,%.3f,%.3f]",
-                  apos[0],apos[1],apos[2],
-                  self.home_position[0],
-                  self.home_position[1],
-                  self.home_position[2])
+        #apos = self._cart2act(self.home_position) 
+        #self._log("home : act=[%.3f,%.3f,%.3f]; cart=[%.3f,%.3f,%.3f]",
+        #          apos[0],apos[1],apos[2],
+        #          self.home_position[0],
+        #          self.home_position[1],
+        #          self.home_position[2])
 
         # set up chelper inverse kinematics
         #    provide necessary parameters for fast cart2act
@@ -289,12 +287,10 @@ class TiltedDeltaKinematics:
         #disp(err);
         #end
 
-    # wrapper to _act2cart(), but gets stepper position by rail name
+    # wrapper to _act2cart(), but gets stepper position by rail name from passed map
     def calc_position(self, stepper_positions):
-        self._log("calc_position()")
         spos = [stepper_positions[rail.get_name()] for rail in self.rails]
         xyz = self._act2cart(spos)
-        #xyz[2] = -xyz[2]  # try flipping Z to match command.  had -Z problem, did nothing?!??
         return xyz
 
     def set_position(self, newpos, homing_axes):
@@ -315,25 +311,80 @@ class TiltedDeltaKinematics:
         self.need_home = True
         
     def home(self, homing_state):
-        self._log("home([%.3f,%.3f,%.3f])",
-                  self.home_position[0],
-                  self.home_position[1],
-                  self.home_position[2])
+        xh, yh, zh = self._act2cart(self.position_endstops)
+        self._log("home() to [%.3f,%.3f,%.3f])",xh,yh,zh)
         # All axes are homed simultaneously
         homing_state.set_axes([0, 1, 2])
         
         # assume we are start homing from here (cartesian)
-        forcepos = [0.,0.,self.home_position[2]/5]
+        forcepos = [0.,0.,zh/5]
 
-        # move here after all homing endstops were triggered
-        homepos = [0.,0.,self.home_position[2]]
+        # it appears that klipper leaves the carriages at the endstop
+        # trigger at the end of home.
+        # Give the true xyz position at the endstops for home.
+        # I would prefer to give something close to home,
+        # that makes home_rails() run smoothly, but
+        # it is very difficult, if not impossible, to correct
+        # toolhead, gcode, and kinematic positions from within
+        # the kinematics class.
+        homepos = [xh,yh,zh]
         
         self._log("homing rails from [%.0f,%.0f,%.0f] to [%.0f,%.0f,%.0f]",
                   forcepos[0],forcepos[1],forcepos[2],
                   homepos[0],  homepos[1], homepos[2])
-        homing_state.home_rails(self.rails, forcepos, homepos)
-        self._log("home() complete.")
         
+        homing_state.home_rails(self.rails, forcepos, homepos)
+
+        """
+        None of this attempt to move to a convenient position near the top center of
+        the envelope worked.  Skip it.
+        carriages are triggered after home_rails.
+        just leave it that way.
+
+        # Ensure all homing moves are flushed from queue
+        th = self.printer.lookup_object('toolhead')
+
+        th.wait_moves()
+
+        # move to home_position
+        x, y, z, e = th.get_position()  # keep e the same
+        target = (xh, yh, zh, e)
+
+        ex, ey, ez = self._act2cart(self.position_endstops)
+        ea, eb, ec = self.position_endstops
+        self._log("endstops : xyz=[%.1f, %.1f, %.1f]; abc=[%.1f,%.1f,%.1f]",
+                  ex,ey,ez,  ex,ey,ez)
+        self._log("Current  : pos=[%.1f, %.1f, %.1f]",x,y,z);
+
+        # for some reason, home_rails seems to set position at home_position,
+        # but it is actually at the endstops.  Try to fix this.
+
+        th.manual_move((xh, yh, zh, e), 50.0)  # manual_move speed is mm/s
+
+        # reguardless of what homing is supposed to do,
+        # actuators seem to be AT endstops when home_rails completes.
+        # I will try to move to homepos by hand.
+        #tpos = self._effector_position()
+        #self._log("\ttoolhead=[%.3f, %.3f, %.3f]", tpos[0], tpos[1], tpos[2])
+        #self._log("home_rails complete.  assuming:\n\tabc=[%.3lf, %.3lf, %.3lf]; xyz=[%.3lf,%.3lf,%.3lf]",
+        #          self.position_endstops[0], self.position_endstops[1], self.position_endstops[2],
+        #          tpos[0], tpos[1], tpos[2])
+        #self.set_position(tpos, "xyz")
+        #self._move_to(homepos, 20)
+        """
+        self._log("home() to [%.3f,%.3f,%3f] complete.",xh,yh,zh)
+
+#    def _move_to(self, pos, mmPerSec):
+#        # need to repeat extruder position to keep it the same
+#        toolhead = self.printer.lookup_object('toolhead')
+#        cur = toolhead.get_position()
+#        toolhead.manual_move((pos[0], pos[1], pos[2], cur[3]), mmPerSec)
+        
+    def _effector_position(self):
+        th = self.printer.lookup_object('toolhead')
+        tpos = th.get_position()
+        return [tpos[0], tpos[1], tpos[2]]
+
     def check_move(self, move):
         end_pos = [move.end_pos[0], move.end_pos[1], move.end_pos[2]]  # last element is extruder position, E, and we don't care
         start_pos = [move.start_pos[0], move.start_pos[1], move.start_pos[2]]
@@ -378,7 +429,7 @@ class TiltedDeltaKinematics:
             z = twr[i] * self.tilt[i,2] # z(mm) for arm at twr[i] from base
             z -= pos[2] # how far from effector_z to top of arm
             z = z / self.arm_lengths[i] # sin of arm angle
-            if (z < .1) or (z > .99):  # arm angle too extreme
+            if (z < .1):# or (z > .998):  # arm angle too extreme
                 self._log("ERROR : arm angle %.1f too extreme",
                           math.degrees(math.asin(z)))
                 return False   
