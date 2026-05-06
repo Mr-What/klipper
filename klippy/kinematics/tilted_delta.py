@@ -33,12 +33,14 @@ class TiltedDeltaKinematics:
             stepper_configs[2], need_position_minmax = False,
             default_position_endstop=a_endstop)
         self.rails = [rail_a, rail_b, rail_c]
-        self.position_endstops = [ a_endstop,
-                         rail_b.get_homing_info().position_endstop,
-                         rail_c.get_homing_info().position_endstop]
-        self.rotation_distances = [
-            config.getsection('stepper_' + a).getfloat('rotation_distance', 40.0)
-            for a in 'abc']
+        #self.position_endstops = [ a_endstop,
+        #                 rail_b.get_homing_info().position_endstop,
+        #                 rail_c.get_homing_info().position_endstop]
+        self.position_endstops  = [ scfg.getfloat('position_endstop')       for scfg in stepper_configs ]
+        self.position_mins      = [ scfg.getfloat('position_min')           for scfg in stepper_configs ]
+        self.rotation_distances = [ scfg.getfloat('rotation_distance', 40.) for scfg in stepper_configs ]
+        #    config.getsection('stepper_' + a).getfloat('rotation_distance', 40.0)
+        #    for a in 'abc']
 
 
         # Setup max velocity
@@ -78,6 +80,12 @@ class TiltedDeltaKinematics:
         # kinematics assert base is z=0 plane, add this AFTER
         # cartesian coords to adjust for thinner print bed, or plate on top of bed.
         #self.z_offset = config.getfloat('z_offset',0.)
+
+        # trying to set [printer] minimum_z_position, even though we
+        # don't actually use it in this class.
+        # However, we have hope that setting this in [printer]
+        # will allow PROBE to go below Z=0
+        self.minimum_z_position = printer_cfg.getfloat('minimum_z_position', 0)
         
         # Setup boundary checks
         self.need_home = True
@@ -149,6 +157,10 @@ class TiltedDeltaKinematics:
         #self.axes_max = toolhead.Coord((max_xy, max_xy, self.max_z))
         self.set_position([0., 0., 0.], "")
 
+        # this is not really useful, but it allows us to retain
+        # a [printer] minimum_z_position which hopefully
+        # is respected by PROBE
+        self._log("minimum_z_position=%.3f",self.minimum_z_position);
         self._log("init complete at %s", self._timestamp())
         
     @staticmethod
@@ -317,7 +329,7 @@ class TiltedDeltaKinematics:
         homing_state.set_axes([0, 1, 2])
         
         # assume we are start homing from here (cartesian)
-        forcepos = [0.,0.,zh/5]
+        forcepos = [0.,0.,-2] #zh/5]
 
         # it appears that klipper leaves the carriages at the endstop
         # trigger at the end of home.
@@ -332,46 +344,7 @@ class TiltedDeltaKinematics:
         self._log("homing rails from [%.0f,%.0f,%.0f] to [%.0f,%.0f,%.0f]",
                   forcepos[0],forcepos[1],forcepos[2],
                   homepos[0],  homepos[1], homepos[2])
-        
         homing_state.home_rails(self.rails, forcepos, homepos)
-
-        """
-        None of this attempt to move to a convenient position near the top center of
-        the envelope worked.  Skip it.
-        carriages are triggered after home_rails.
-        just leave it that way.
-
-        # Ensure all homing moves are flushed from queue
-        th = self.printer.lookup_object('toolhead')
-
-        th.wait_moves()
-
-        # move to home_position
-        x, y, z, e = th.get_position()  # keep e the same
-        target = (xh, yh, zh, e)
-
-        ex, ey, ez = self._act2cart(self.position_endstops)
-        ea, eb, ec = self.position_endstops
-        self._log("endstops : xyz=[%.1f, %.1f, %.1f]; abc=[%.1f,%.1f,%.1f]",
-                  ex,ey,ez,  ex,ey,ez)
-        self._log("Current  : pos=[%.1f, %.1f, %.1f]",x,y,z);
-
-        # for some reason, home_rails seems to set position at home_position,
-        # but it is actually at the endstops.  Try to fix this.
-
-        th.manual_move((xh, yh, zh, e), 50.0)  # manual_move speed is mm/s
-
-        # reguardless of what homing is supposed to do,
-        # actuators seem to be AT endstops when home_rails completes.
-        # I will try to move to homepos by hand.
-        #tpos = self._effector_position()
-        #self._log("\ttoolhead=[%.3f, %.3f, %.3f]", tpos[0], tpos[1], tpos[2])
-        #self._log("home_rails complete.  assuming:\n\tabc=[%.3lf, %.3lf, %.3lf]; xyz=[%.3lf,%.3lf,%.3lf]",
-        #          self.position_endstops[0], self.position_endstops[1], self.position_endstops[2],
-        #          tpos[0], tpos[1], tpos[2])
-        #self.set_position(tpos, "xyz")
-        #self._move_to(homepos, 20)
-        """
         self._log("home() to [%.3f,%.3f,%3f] complete.",xh,yh,zh)
 
 #    def _move_to(self, pos, mmPerSec):
@@ -393,12 +366,9 @@ class TiltedDeltaKinematics:
                   getattr(move,"axes_d", None),
                   self.need_home)
 
-        #return # debug.  no checking.
-    
         if self.need_home:
             self._log("rejecting move, need home first");
-            #raise move.move_error("Must home first")
-            return  # debugging ONLY!  move anyway to test steppers
+            raise move.move_error("Must home first")
 
         if not self._check_envelope(end_pos):
             raise move.move_error("outside print envelope")
@@ -425,14 +395,34 @@ class TiltedDeltaKinematics:
             return False
         self._log("\ttwr=[%.3f,%.3f,%.3f]",twr[0], twr[1], twr[2])
 
+        return True  # disable checking to test limits
         for i in range(3):
+            if twr[i] < self.position_mins[i] :
+                self._log(" ERROR tower %d too low.  %.1f < %.1f",i ,twr[i] ,self.position_mins[i])
+                return False
             z = twr[i] * self.tilt[i,2] # z(mm) for arm at twr[i] from base
             z -= pos[2] # how far from effector_z to top of arm
             z = z / self.arm_lengths[i] # sin of arm angle
-            if (z < .1):# or (z > .998):  # arm angle too extreme
-                self._log("ERROR : arm angle %.1f too extreme",
+            if z < .1:
+                self._log("ERROR : arm angle %.1f too horizontal",
                           math.degrees(math.asin(z)))
-                return False   
+                return False
+            if z > .9 : # fairly vertical, check if too close to tower
+                base = self.base[i];
+                r = math.hypot(base[0], base[1], base[2]);
+                baseHat = [x/r for x in base];
+                toAct = [act - tool for act, tool in zip(twr, pos)]
+                xy = (baseHat[0] * toAct[0] +
+                      baseHat[1] * toAct[1] +
+                      baseHat[2] * toAct[2])
+                if (self.tilt_radial[i] > 5) :
+                    if (xy < 0):
+                        self._log("_checkEnvelope too close to tower %d",i);
+                        return False
+                elif xy < self.arm_lengths[i]/50. :
+                    self._log("ERROR : arm %.1fmm from to plane perpendicular to tower %d.  too close.",xy,i)
+                    return False
+                
         return True
 
     # this should do the same thing as chelper tilted_delta_calc_position()
@@ -447,7 +437,6 @@ class TiltedDeltaKinematics:
         for i in range(3):
             d = self._towerDistance(self.base[i,:], self.tilt[i,:],
                                self.arm_lengths[i],xyz)
-            #self._log("\ttower %d distance %.3f",i,d)
             if d == 0:
                 return None
             
@@ -463,11 +452,11 @@ class TiltedDeltaKinematics:
         dq = q - p0
         c = np.dot(dq,dq) - r*r
         disc = b*b - 4*c
-        if (disc < 0):
-            return 0
+        if (disc < 100) :  # don't let this get too close to 0.
+            return 0       # arm nearly fully extended.
         d = (-b + math.sqrt(disc))/2
         return float(d)   # make sure d is not np.float
-
+    
     def get_status(self, eventtime):
         return {
             'homed_axes': '' if self.need_home else 'xyz'
